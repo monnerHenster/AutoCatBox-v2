@@ -1,0 +1,21 @@
+# Local secrets and tokens
+*.token
+*.secret
+*.secrets
+.env
+.env.*
+
+# Backups and local dumps
+*.tar
+*.tar.gz
+*.zip
+*.db
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

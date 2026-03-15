@@ -26,3 +26,6 @@ Add this repository URL in HA add-on store:
 - `README.md`
 - `dreame_tuya_trigger/`
 - `dreame_tuya_trigger_v2/`
+
+## Security
+- Do not commit HA long-lived tokens, credentials, or backup archives to this repository.
