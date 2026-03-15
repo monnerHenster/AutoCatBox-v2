@@ -1,0 +1,41 @@
+﻿name: Dreame Tuya Trigger V2
+description: Subscribe Tuya Pulsar and split actions for vacuum and weight-save webhook.
+version: "2.0.0"
+slug: dreame_tuya_trigger_v2
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+  - i386
+init: false
+homeassistant_api: true
+ports:
+  "8099/tcp": 8099
+webui: "http://[HOST]:[PORT:8099]/"
+options:
+  tuya_access_id: ""
+  tuya_access_key: ""
+  tuya_mq_env: "event-test"
+  trigger_code: "excretion_time_day"
+  enable_vacuum_call: false
+  enable_weight_save: true
+  webhook_path: "/api/webhook/cat_weight_from_tuya_trigger"
+  ha_url: "http://supervisor/core"
+  ha_token: ""
+  vacuum_entity_id: "vacuum.s50_pro_chao_bo_shang_xia_shui_ban"
+  segments:
+    - 13
+schema:
+  tuya_access_id: str
+  tuya_access_key: str
+  tuya_mq_env: str
+  trigger_code: str
+  enable_vacuum_call: bool
+  enable_weight_save: bool
+  webhook_path: str
+  ha_url: str
+  ha_token: str
+  vacuum_entity_id: str
+  segments:
+    - int
