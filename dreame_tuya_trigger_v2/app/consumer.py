@@ -9,6 +9,7 @@ import json
 import signal
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pulsar
@@ -34,6 +35,12 @@ from mq_authentication import get_authentication
 
 DEBUG_PORT = 8099
 shutdown = False
+SESSION_IDLE_TIMEOUT_SEC = 3.0
+SESSION_MAX_DURATION_SEC = 15.0
+REQUIRED_CODES = ("excretion_time_day", "cat_weight")
+
+# Per-device aggregation window to handle out-of-order property reports.
+_sessions = {}
 
 
 def _on_signal(_sig, _frame):
@@ -58,6 +65,87 @@ def _collect_code_values(obj: dict) -> dict:
 def _has_trigger_code(obj: dict) -> bool:
     codes = _collect_code_values(obj)
     return TRIGGER_CODE in codes
+
+
+def _extract_dev_id(obj: dict) -> str:
+    biz_data = obj.get("bizData") or {}
+    return str(biz_data.get("devId") or "")
+
+
+def _normalize_weight_kg(raw_weight):
+    if raw_weight is None:
+        return None
+    try:
+        w = float(raw_weight)
+    except (TypeError, ValueError):
+        return None
+    # Tuya cat_weight is commonly integer with scale=3 (e.g. 4220 => 4.220 kg).
+    if w > 100:
+        w = w / 1000.0
+    return round(w, 3)
+
+
+def _upsert_session(dev_id: str, msg_id: str, obj: dict, codes: dict) -> None:
+    now = time.time()
+    sess = _sessions.get(dev_id)
+    if not sess:
+        sess = {
+            "start_at": now,
+            "last_at": now,
+            "codes": {},
+            "msg_ids": [],
+            "last_raw": None,
+        }
+        _sessions[dev_id] = sess
+    sess["last_at"] = now
+    sess["codes"].update(codes)
+    sess["msg_ids"].append(msg_id)
+    sess["last_raw"] = obj
+
+
+def _should_flush_session(sess: dict) -> bool:
+    now = time.time()
+    idle = now - sess["last_at"]
+    alive = now - sess["start_at"]
+    return idle >= SESSION_IDLE_TIMEOUT_SEC or alive >= SESSION_MAX_DURATION_SEC
+
+
+def _flush_session(dev_id: str, sess: dict) -> None:
+    codes = sess.get("codes") or {}
+    missing = [c for c in REQUIRED_CODES if c not in codes]
+    if missing:
+        print(f"[session] drop dev={dev_id}, missing required codes: {missing}")
+        return
+
+    weight_kg = _normalize_weight_kg(codes.get("cat_weight"))
+    payload = {
+        "dev_id": dev_id,
+        "msg_ids": sess.get("msg_ids") or [],
+        "trigger_code": "excretion_time_day",
+        "codes": codes,
+        "weight": weight_kg,
+        "raw": sess.get("last_raw"),
+    }
+    print(
+        f"[session] ready dev={dev_id} excretion_time_day={codes.get('excretion_time_day')} "
+        f"cat_weight_raw={codes.get('cat_weight')} weight_kg={weight_kg}"
+    )
+
+    if ENABLE_VACUUM_CALL:
+        call_dreame_vacuum()
+    if ENABLE_WEIGHT_SAVE:
+        call_ha_webhook(payload)
+
+
+def _flush_ready_sessions() -> None:
+    expired = []
+    for dev_id, sess in _sessions.items():
+        if _should_flush_session(sess):
+            expired.append(dev_id)
+    for dev_id in expired:
+        sess = _sessions.pop(dev_id, None)
+        if sess:
+            _flush_session(dev_id, sess)
 
 
 def _resolve_webhook_url(path: str) -> str:
@@ -170,25 +258,12 @@ def handle_message(pulsar_message, decrypt_msg: str, msg_id: str) -> None:
     try:
         obj = json.loads(decrypt_msg)
         print(json.dumps(obj, ensure_ascii=False, indent=2))
-        if _has_trigger_code(obj):
-            codes = _collect_code_values(obj)
-            print(f"[trigger] detected code={TRIGGER_CODE}")
-            payload = {
-                "msg_id": msg_id,
-                "trigger_code": TRIGGER_CODE,
-                "codes": codes,
-                "weight": (
-                    codes.get("weight")
-                    or codes.get("cat_weight")
-                    or codes.get("pet_weight")
-                    or codes.get("excretion_weight")
-                ),
-                "raw": obj,
-            }
-            if ENABLE_VACUUM_CALL:
-                call_dreame_vacuum()
-            if ENABLE_WEIGHT_SAVE:
-                call_ha_webhook(payload)
+        codes = _collect_code_values(obj)
+        dev_id = _extract_dev_id(obj)
+        if dev_id and codes:
+            _upsert_session(dev_id, msg_id, obj, codes)
+            if TRIGGER_CODE in codes:
+                print(f"[trigger] detected code={TRIGGER_CODE} dev={dev_id}")
     except json.JSONDecodeError:
         print(decrypt_msg)
 
@@ -226,6 +301,7 @@ def main() -> int:
 
     try:
         while not shutdown:
+            _flush_ready_sessions()
             try:
                 pulsar_message = consumer.receive(timeout_millis=3000)
             except Exception as e:
@@ -245,6 +321,9 @@ def main() -> int:
     except pulsar.Interrupted:
         print("Interrupted")
     finally:
+        for dev_id in list(_sessions.keys()):
+            sess = _sessions.pop(dev_id)
+            _flush_session(dev_id, sess)
         consumer.close()
         client.close()
     return 0

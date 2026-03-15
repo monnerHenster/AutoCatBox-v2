@@ -1,6 +1,6 @@
 ﻿name: Dreame Tuya Trigger V2
 description: Subscribe Tuya Pulsar and split actions for vacuum and weight-save webhook.
-version: "2.0.0"
+version: "2.0.1"
 slug: dreame_tuya_trigger_v2
 arch:
   - aarch64
